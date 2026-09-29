@@ -21,23 +21,31 @@
 
 
 module mod_mult#(
-    parameter width   =16,
-    parameter r_mod_q = 2988  //Q=3329
+    parameter width   =12,
+    parameter r_mod_q = 2988,  //Q=3329
+    parameter q       =3329
     )(
     input             clk,
     input             rst,
     input [width-1:0] data_in_1,
     input [width-1:0] data_in_2,
-    input [22:0]      q,
-    input             start,
-    output reg        done,
-    output reg [22:0] data_out
+    //input [22:0]      q,
+    input             din_vld,
+
+    output            done,
+    output     [11:0] data_out
     );
 
-    
+wire [2*width-1:0] data;
+wire               ready;
+
+booth_mult mult(.clk(clk), .rst(rst), .data_in_1(data_in_1), .data_in_2(data_in_2), .din_vld(din_vld), .data_out(data), .done(ready));
+barrett     mod_sub(.clk(clk), .rst(rst), .data_in(data), .din_vld(ready), .dout_vld(done), .data_out(data_out));
+
+/*    
     wire [2*width:0]   result;
     wire [2*width:0]   buff  ;
-/*
+
     wire [width+21:0] s21 = data_in_1 << 21;
     wire [width+21:0] s18 = data_in_1 << 18;
     wire [width+21:0] s12 = data_in_1 << 12;
@@ -50,8 +58,8 @@ module mod_mult#(
     (* keep = "true" *) wire [width+21:0] sum4 = sum3 + s9;
 
     (* keep = "true" *) wire [2*width:0]data_tran = sum4 - data_in_1;
-*/
-    (* use_dsp = "no" *)reg [width:0]      data1;
+
+    (* use_dsp = "no" *)reg [width-1:0]      data1;
     reg [width-1:0]    data2;
 
     reg [8:0]          cnt;
@@ -77,33 +85,32 @@ module mod_mult#(
             data_out <= 0;
             
         end
-        else if (start&!done) begin
-            if (cnt == 0) begin
-                data1 <= data_in_1*r_mod_q;
+        else if (cnt == 0) begin
+            if (start) begin
+                data1 <= data_in_1;
                 data2 <= data_in_2;
                 cnt   <= cnt +1;
                 Q     <= q;
+                done  <= 0;
+                temp  <= 0; 
 
             end
-            else if (cnt < width+1)begin
+        end
+        else if (cnt < width+1)begin
                 temp   <= buff;
 
                 data2  <=  data2 >> 1;
                 
                 cnt    <=  cnt+1;
 
-            end
-            else begin
-                if (result>=Q) begin
-                    temp <= temp - Q;
-                end
-                else begin
-                    done     <= 1;
-                    data_out <= temp;
-                end
-            end
-            
         end
+        else begin
+                data_out <= (temp >= Q) ? (temp - Q) : temp;
+                done     <= 1;
+                cnt      <= 0;
+        end
+            
+        
     end
-
+*/
 endmodule

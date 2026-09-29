@@ -25,7 +25,7 @@ module absorb(
     //input          ready,
     //input          clk,
     //input          rst,
-    input [64:0]   rc,
+    input [63:0]   rc,
     //input [1599:0] data_mid,
 
     output [1599:0] data_out
@@ -48,7 +48,7 @@ wire [63:0] pi [24:0];
 
 wire [63:0] chi [24:0];
 
-wire lota [63:0];
+wire [63:0] lota ;
 
 wire [63:0]data[24:0];
 //wire [63:0]data_mid[24:0];
@@ -86,11 +86,11 @@ generate
         end
 //执行theta操作
         for (i = 0; i < 21; i = i + 5)begin:theta__block
-            assign theta[i] = theta_y[4]^theta_y[1]^data[i];
-            assign theta[i+1] = theta_y[0]^theta_y[2]^data[i+1];
-            assign theta[i+2] = theta_y[1]^theta_y[3]^data[i+2];
-            assign theta[i+3] = theta_y[2]^theta_y[4]^data[i+3];
-            assign theta[i+4] = theta_y[3]^theta_y[0]^data[i+4];
+            assign theta[i] = theta_y[4]^data[i]^{theta_y[1][62:0],theta_y[1][63]};
+            assign theta[i+1] = theta_y[0]^data[i+1]^{theta_y[2][62:0],theta_y[2][63]};
+            assign theta[i+2] = theta_y[1]^data[i+2]^{theta_y[3][62:0],theta_y[3][63]};
+            assign theta[i+3] = theta_y[2]^data[i+3]^{theta_y[4][62:0],theta_y[4][63]};
+            assign theta[i+4] = theta_y[3]^data[i+4]^{theta_y[0][62:0],theta_y[0][63]};
         end
 endgenerate
 
@@ -163,7 +163,7 @@ generate
     genvar k;
     for (k = 0; k < 21; k = k + 5)begin:chi_block
         assign chi[k] = pi[k]^(~pi[k+1]&pi[k+2]);
-        assign chi[k+1] = pi[0]^(~pi[k+1]&pi[k+2]);
+        assign chi[k+1] = pi[k+1]^(~pi[k+2]&pi[k+3]);
         assign chi[k+2] = pi[k+2]^(~pi[k+3]&pi[k+4]);
         assign chi[k+3] = pi[k+3]^(~pi[k+4]&pi[k]);
         assign chi[k+4] = pi[k+4]^(~pi[k]&pi[k+1]);
@@ -171,14 +171,14 @@ generate
 endgenerate
 
 //lota
-assign lata = chi[0]^rc;
+assign lota = chi[0]^rc;
 
 
-assign data_out[63:0] = lata;
+assign data_out[63:0] = lota;
 
 generate
     genvar l;
-     for (l = 1; l < 24; l = l + +1)begin:out_block
+     for (l = 1; l < 25; l = l + +1)begin:out_block
         assign data_out[64*l +: 64] = chi[l];
     end
 endgenerate

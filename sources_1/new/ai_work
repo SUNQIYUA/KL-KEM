@@ -1,0 +1,236 @@
+`timescale 1ns / 1ps
+
+// ==============================================================================
+// 模块名称: ML_KEM_Top_Microcoded
+// 描述: 基于微码架构的 ML-KEM 顶层状态机，通过读取指令调度 Keccak 和 NTT
+// ==============================================================================
+
+module ML_KEM_Top_Microcoded (
+    input  wire        clk,
+    input  wire        rst_n,
+    
+    // 外部控制接口 (CPU/PCIe 发来的命令)
+    input  wire        start_cmd,
+    input  wire [1:0]  op_mode,     // 2'b00: KeyGen, 2'b01: Enc, 2'b10: Dec
+    output reg         ready_done   // 宏观任务完成标志
+);
+
+    // ==========================================================================
+    // 1. 指令集架构 (ISA) 定义 (16-bit)
+    // [15:14] Opcode: 操作码 (谁来干活)
+    // [13:12] SubOp:  子模式 (具体干什么) 
+    // [11:8]  Src:    源 RAM 地址
+    // [7:4]   Dst:    目标 RAM 地址
+    // [3:0]   Misc:   预留/偏移量
+    // ==========================================================================
+    localparam OP_NOP    = 2'b00; // 空闲/结束
+    localparam OP_KECCAK = 2'b01; // 调用 Keccak/采样器
+    localparam OP_POLY   = 2'b10; // 调用 多项式引擎(NTT/ALU)
+    
+    // Poly 引擎子模式
+    localparam SUB_NTT   = 2'b00;
+    localparam SUB_INTT  = 2'b01;
+    localparam SUB_P2P   = 2'b10; // 乘加运算
+
+    // ==========================================================================
+    // 2. 状态机定义 (极简 CPU 状态)
+    // ==========================================================================
+    localparam S_IDLE    = 3'd0;
+    localparam S_FETCH   = 3'd1;
+    localparam S_DECODE  = 3'd2;
+    localparam S_EXECUTE = 3'd3;
+    localparam S_WAIT    = 3'd4;
+    localparam S_DONE    = 3'd5;
+
+    reg [2:0] state, next_state;
+    reg [7:0] pc, next_pc;             // 程序计数器 (Program Counter)
+    
+    // ==========================================================================
+    // 3. 微码 ROM (指令存储器)
+    // ==========================================================================
+    reg  [15:0] rom_data;
+    wire [15:0] instruction = rom_data;
+
+    // 组合逻辑 ROM (实际工程中可使用 BRAM 或纯组合逻辑实现)
+    always @(*) begin
+        case (pc)
+            // --- KeyGen 阶段 (入口地址 8'h00) ---
+            8'h00: rom_data = {OP_KECCAK, 2'b00, 4'd0, 4'd1, 4'd0}; // 生成矩阵A存入RAM1
+            8'h01: rom_data = {OP_POLY, SUB_NTT, 4'd1, 4'd1, 4'd0}; // 对RAM1做前向NTT
+            8'h02: rom_data = {OP_KECCAK, 2'b01, 4'd0, 4'd2, 4'd0}; // 生成密钥s存入RAM2
+            8'h03: rom_data = {OP_POLY, SUB_NTT, 4'd2, 4'd2, 4'd0}; // 对RAM2做前向NTT
+            8'h04: rom_data = {OP_NOP, 14'd0};                      // 结束指令
+
+            // --- Enc 加密阶段 (入口地址 8'h40) ---
+            8'h40: rom_data = {OP_KECCAK, 2'b00, 4'd0, 4'd1, 4'd0}; // 生成矩阵A
+            8'h41: rom_data = {OP_POLY, SUB_P2P, 4'd1, 4'd3, 4'd0}; // 多项式乘加
+            8'h42: rom_data = {OP_NOP, 14'd0};                      // 结束指令
+            
+            default: rom_data = 16'h0000;
+        endcase
+    end
+
+    // ==========================================================================
+    // 4. 译码器 (Decoder) - 纯组合逻辑电线分流
+    // ==========================================================================
+    wire [1:0] dec_opcode = instruction[15:14];
+    wire [1:0] dec_subop  = instruction[13:12];
+    wire [3:0] dec_src    = instruction[11:8];
+    wire [3:0] dec_dst    = instruction[7:4];
+    wire [3:0] dec_misc   = instruction[3:0];
+
+    // ==========================================================================
+    // 5. 底层模块接口控制 (Control & Datapath)
+    // ==========================================================================
+    // 这些是你已经写好的底层模块的引脚
+    reg  keccak_start;
+    wire keccak_done;
+    // (此处应例化你的 Keccak 模块，略)
+    assign keccak_done = 1'b1; // 假装它瞬间完成了 (占位)
+
+    reg  poly_start;
+    reg  [1:0] poly_mode;
+    wire poly_done;
+    // (此处应例化你的 NTT/Poly ALU 模块，略)
+    assign poly_done = 1'b1;   // 假装它瞬间完成了 (占位)
+
+    // 底层完成信号路由 (根据当前 opcode 判断看谁的 done)
+    wire current_op_done;
+    assign current_op_done = (dec_opcode == OP_KECCAK) ? keccak_done :
+                             (dec_opcode == OP_POLY)   ? poly_done   : 1'b1;
+
+    // ==========================================================================
+    // 6. 核心状态机 - 纯粹的调度器，没有任何算法逻辑
+    // ==========================================================================
+    // 6.1 状态跳转 (时序逻辑)
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state <= S_IDLE;
+            pc    <= 8'd0;
+        end else begin
+            state <= next_state;
+            pc    <= next_pc;
+        end
+    end
+
+    // 6.2 下一状态与 PC 计算 (组合逻辑)
+    always @(*) begin
+        next_state = state;
+        next_pc    = pc;
+        
+        case (state)
+            S_IDLE: begin
+                if (start_cmd) begin
+                    // 根据外部命令，跳到对应的 ROM 入口地址
+                    case(op_mode)
+                        2'b00: next_pc = 8'h00; // KeyGen 地址
+                        2'b01: next_pc = 8'h40; // Enc 地址
+                        2'b10: next_pc = 8'h80; // Dec 地址
+                        default: next_pc = 8'h00;
+                    endcase
+                    next_state = S_FETCH;
+                end
+            end
+
+            S_FETCH: begin
+                // ROM 给出数据需要时间，通常等一拍进入译码
+                next_state = S_DECODE; 
+            end
+
+            S_DECODE: begin
+                if (dec_opcode == OP_NOP) begin
+                    next_state = S_DONE; // 读到结束指令
+                end else begin
+                    next_state = S_EXECUTE;
+                end
+            end
+
+            S_EXECUTE: begin
+                // 发出 start 脉冲后，立即转入等待状态
+                next_state = S_WAIT;
+            end
+
+            S_WAIT: begin
+                if (current_op_done) begin
+                    next_pc    = pc + 1'b1; // 指针 +1
+                    next_state = S_FETCH;   // 取下一条指令
+                end
+            end
+
+            S_DONE: begin
+                next_state = S_IDLE;
+            end
+            
+            default: next_state = S_IDLE;
+        endcase
+    end
+
+    // 6.3 输出控制 (组合逻辑 / 寄存器输出)
+    always @(*) begin
+        // 默认清零启动信号
+        keccak_start = 1'b0;
+        poly_start   = 1'b0;
+        poly_mode    = 2'b00;
+        ready_done   = 1'b0;
+
+        if (state == S_EXECUTE) begin
+            // 根据译码结果，精准拨动底层模块的开关
+            if (dec_opcode == OP_KECCAK) begin
+                keccak_start = 1'b1;
+            end 
+            else if (dec_opcode == OP_POLY) begin
+                poly_start = 1'b1;
+                poly_mode  = dec_subop;
+            end
+        end
+
+        if (state == S_DONE) begin
+            ready_done = 1'b1;
+        end
+    end
+
+// ==========================================================================
+// 补齐：中央存储器 (BRAM Bank) 与 交叉互联网络 (Crossbar)
+// ==========================================================================
+
+// 1. 例化两块 BRAM (假设深度为 256，位宽 12-bit，用于存多项式)
+wire [7:0]  ram1_addr;
+wire [11:0] ram1_write_data;
+wire        ram1_we;
+wire [11:0] ram1_read_data;
+
+wire [7:0]  ram2_addr;
+wire [11:0] ram2_write_data;
+wire        ram2_we;
+wire [11:0] ram2_read_data;
+
+// (这里是伪代码例化，实际工程中需调用 FPGA 的 BRAM IP 或自写 RAM 模型)
+// BRAM_DualPort RAM_Bank_1 (.clk(clk), .addr(ram1_addr), .we(ram1_we), ...);
+// BRAM_DualPort RAM_Bank_2 (.clk(clk), .addr(ram2_addr), .we(ram2_we), ...);
+
+// 2. 读数据路由 (Read MUX) - 谁能读 RAM？
+// 如果指令的源地址是 4'd1，说明当前运算需要读取 RAM 1 的数据
+wire [11:0] ntt_data_in;
+assign ntt_data_in = (dec_src == 4'd1) ? ram1_read_data :
+                     (dec_src == 4'd2) ? ram2_read_data : 12'd0;
+
+// 3. 写数据路由 (Write MUX) - 谁能写 RAM？
+// 根据 opcode 决定写入的数据是来自 Keccak 还是 NTT
+wire [11:0] shared_write_data;
+assign shared_write_data = (dec_opcode == OP_KECCAK) ? keccak_data_out :
+                           (dec_opcode == OP_POLY)   ? ntt_data_out    : 12'd0;
+
+// 4. 写使能路由 (Write Enable Demux) - 到底写进哪块 RAM？
+// 根据指令的目标地址 (dec_dst) 拨动写开关
+assign ram1_we = (state == S_EXECUTE) && (dec_dst == 4'd1);
+assign ram2_we = (state == S_EXECUTE) && (dec_dst == 4'd2);
+
+// 5. 地址线共享 (Address Sharing)
+// 无论是读还是写，地址都由当前正在运行的底层模块提供
+assign ram1_addr = (dec_opcode == OP_KECCAK) ? keccak_addr_out :
+                   (dec_opcode == OP_POLY)   ? ntt_addr_out    : 8'd0;
+
+assign ram2_addr = (dec_opcode == OP_KECCAK) ? keccak_addr_out :
+                   (dec_opcode == OP_POLY)   ? ntt_addr_out    : 8'd0;
+                   
+endmodule
